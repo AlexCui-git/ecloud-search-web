@@ -106,33 +106,82 @@ class ECloudSearcher:
         return result_link
 
     def _calculate_similarity(self, query: str, text: str) -> float:
-        """改进的相似度计算"""
+        """改进的相似度计算，增加多维度匹配"""
         self.logger.debug(f"计算相似度 - 查询词长度: {len(query)}, 文本长度: {len(text)}")
         if not text:
             return 0.0
         
-        # 分词处理
-        query_words = set(query.lower().split())
-        text_words = set(text.lower().split())
+        # 预处理文本
+        query = query.lower().strip()
+        text = text.lower().strip()
         
-        # TF-IDF启发的权重计算
+        # 1. 精确匹配检查 (20% 权重)
+        exact_match_score = 1.0 if query in text else 0.0
+        
+        # 2. 分词处理和TF-IDF计算 (35% 权重)
+        query_words = set(query.split())
+        text_words = set(text.split())
+        
+        # 计算词频和权重
         word_weights = {}
         for word in query_words:
             # 计算词在文本中的频率
-            word_count = text.lower().count(word)
-            word_weights[word] = 1 + (0.5 * word_count if word_count > 0 else 0)
+            word_count = text.count(word)
+            # 长词给予更高权重
+            length_boost = len(word) / len(max(query_words, key=len))
+            word_weights[word] = (1 + (0.5 * word_count)) * length_boost
         
         # 计算加权匹配分数
         common_words = query_words & text_words
         weighted_matches = sum(word_weights.get(word, 0) for word in common_words)
-        total_weight = sum(word_weights.values())
+        total_weight = sum(word_weights.values()) or 1
+        tfidf_score = weighted_matches / total_weight
         
-        keyword_score = weighted_matches / total_weight if total_weight > 0 else 0
-        sequence_score = SequenceMatcher(None, query.lower(), text.lower()).ratio()
+        # 3. 序列匹配 (25% 权重)
+        sequence_score = SequenceMatcher(None, query, text).ratio()
         
-        score = keyword_score * 0.7 + sequence_score * 0.3
-        self.logger.debug(f"相似度计算结果: {score:.4f}")
-        return score
+        # 4. N-gram 匹配 (20% 权重)
+        def get_ngrams(text: str, n: int) -> set:
+            return set(text[i:i+n] for i in range(len(text)-n+1))
+        
+        # 使用bi-grams和tri-grams
+        query_bigrams = get_ngrams(query, 2)
+        text_bigrams = get_ngrams(text, 2)
+        query_trigrams = get_ngrams(query, 3)
+        text_trigrams = get_ngrams(text, 3)
+        
+        bigram_similarity = (
+            len(query_bigrams & text_bigrams) / 
+            (len(query_bigrams | text_bigrams) or 1)
+        )
+        trigram_similarity = (
+            len(query_trigrams & text_trigrams) / 
+            (len(query_trigrams | text_trigrams) or 1)
+        )
+        ngram_score = (bigram_similarity + trigram_similarity) / 2
+        
+        # 计算最终得分
+        final_score = (
+            exact_match_score * 0.20 +
+            tfidf_score * 0.35 +
+            sequence_score * 0.25 +
+            ngram_score * 0.20
+        )
+        
+        # 根据文本长度进行惩罚
+        length_ratio = min(len(text) / len(query), 5.0) / 5.0
+        final_score *= (0.8 + 0.2 * length_ratio)
+        
+        self.logger.debug(
+            f"相似度计算结果:\n"
+            f"- 精确匹配得分: {exact_match_score:.4f}\n"
+            f"- TF-IDF得分: {tfidf_score:.4f}\n"
+            f"- 序列匹配得分: {sequence_score:.4f}\n"
+            f"- N-gram得分: {ngram_score:.4f}\n"
+            f"- 最终得分: {final_score:.4f}"
+        )
+        
+        return final_score
 
     async def _extract_result_details(self, result_element) -> SearchResult:
         """提取搜索结果的详细信息"""
