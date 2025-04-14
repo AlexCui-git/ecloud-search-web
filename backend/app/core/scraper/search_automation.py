@@ -219,7 +219,11 @@ class ECloudSearcher:
                 except Exception as browser_error:
                     self.logger.error("浏览器启动失败，尝试安装浏览器")
                     import subprocess
-                    subprocess.run(["python", "-m", "playwright", "install", "chromium"])
+                    try:
+                        subprocess.run(["python3", "-m", "playwright", "install", "chromium"])
+                    except Exception as e:
+                        self.logger.error(f"安装 Playwright 失败: {e}")
+                        raise
                     browser = await p.chromium.launch(headless=True)
                 
                 self.logger.debug("浏览器已启动")
