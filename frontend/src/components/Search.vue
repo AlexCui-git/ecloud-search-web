@@ -6,7 +6,7 @@
       
       <el-input
         v-model="query"
-        placeholder="请输入您的问题，例如：如何创建云主机？"
+        placeholder="请输入查询关键字，例如：云主机系统盘 最大配置容量"
         :suffix-icon="Search"
         @keyup.enter="handleSearch"
         class="search-input"

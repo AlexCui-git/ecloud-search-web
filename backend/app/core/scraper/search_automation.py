@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import logging.handlers
+import os
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from functools import lru_cache
@@ -25,9 +26,18 @@ def setup_logging():
         
     logger.setLevel(logging.DEBUG)
     
+    # 创建日志目录
+    log_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+        'logs'
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_file = os.path.join(log_dir, 'search_automation.log')
+    
     # 文件处理器 - 按天切割日志
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        filename='logs/search_automation.log',
+        filename=log_file,  # 使用绝对路径
         when='midnight',
         interval=1,
         backupCount=7,
@@ -192,25 +202,28 @@ class ECloudSearcher:
                 "h3",
                 ".title",
                 ".heading",
-                "a >> text", # 如果标题在链接文本中
+                "a >> text",
                 "[class*='title']"
             ]
             
-            # 尝试不同的标题选择器
+            # 修复标题提取逻辑
             title = ""
             for selector in title_selectors:
                 try:
-                    title_element = result_element.locator(selector).first
-                    if await title_element.count() > 0:
-                        title = (await title_element.inner_text()).strip()
-                        break
-                except:
+                    title_elements = await result_element.locator(selector).all()
+                    if title_elements:  # 检查是否找到了元素
+                        title = await title_elements[0].inner_text()
+                        title = title.strip()
+                        if title:  # 如果找到有效标题就退出循环
+                            break
+                except Exception as e:
+                    self.logger.debug(f"使用选择器 {selector} 提取标题失败: {str(e)}")
                     continue
                     
             if not title:
                 title = await result_element.inner_text()
                 
-            # 获取内容摘要，避免获取整个元素的文本
+            # 修复内容提取逻辑
             content_selectors = [
                 ".description",
                 ".summary",
@@ -222,29 +235,36 @@ class ECloudSearcher:
             content = ""
             for selector in content_selectors:
                 try:
-                    content_element = result_element.locator(selector).first
-                    if await content_element.count() > 0:
-                        content = (await content_element.inner_text()).strip()
-                        break
-                except:
+                    content_elements = await result_element.locator(selector).all()
+                    if content_elements:  # 检查是否找到了元素
+                        content = await content_elements[0].inner_text()
+                        content = content.strip()
+                        if content:  # 如果找到有效内容就退出循环
+                            break
+                except Exception as e:
+                    self.logger.debug(f"使用选择器 {selector} 提取内容失败: {str(e)}")
                     continue
                     
             if not content:
-                # 如果没有找到特定内容区域，获取整个元素文本并清理
                 content = await result_element.inner_text()
-                # 移除标题部分避免重复
                 if title in content:
                     content = content.replace(title, "").strip()
             
-            # 获取链接
-            link = await result_element.locator("a").first.get_attribute("href")
-            full_url = self._build_full_url(link)
+            # 修复链接提取逻辑
+            try:
+                link_elements = await result_element.locator("a").all()
+                link = await link_elements[0].get_attribute("href") if link_elements else ""
+                full_url = self._build_full_url(link) if link else ""
+            except Exception as e:
+                self.logger.error(f"提取链接失败: {str(e)}")
+                full_url = ""
             
             self.logger.debug(f"成功提取结果: {title[:30]}...")
             return SearchResult(
-                title=title,
-                content=content,
-                url=full_url
+                title=title or "无标题",
+                content=content or "无内容",
+                url=full_url or "",
+                score=0.0
             )
         except Exception as e:
             self.logger.error(f"提取结果详情失败: {str(e)}", exc_info=True)
@@ -456,10 +476,16 @@ class ECloudSearcherCLI:
                 query = Prompt.ask("[bold cyan]请输入搜索问题[/bold cyan]")
                 if query.lower() in ('quit', 'exit'):
                     break
-                    
-                with Progress() as progress:
-                    task = progress.add_task("[cyan]搜索中...", total=None)
+                
+                # 修复进度条实现
+                with Progress(
+                    "[progress.description]{task.description}",
+                    transient=True
+                ) as progress:
+                    # 设置具体的total值，避免None
+                    task = progress.add_task("[cyan]搜索中...", total=100)
                     result = await self.searcher.get_best_answer(query)
+                    # 完成后更新进度
                     progress.update(task, completed=100)
                 
                 self.display_results(result)
@@ -469,6 +495,7 @@ class ECloudSearcherCLI:
                 self.console.print("\n[yellow]程序已终止[/yellow]")
                 break
             except Exception as e:
+                self.logger.error(f"搜索出错: {str(e)}", exc_info=True)
                 self.console.print(f"[bold red]错误: {str(e)}[/bold red]")
 
 async def main():
